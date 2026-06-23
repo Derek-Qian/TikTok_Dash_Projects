@@ -26,3 +26,4 @@ htmlcov/
 .coverage
 .env.bak
 .env.bak
+.env.bak
