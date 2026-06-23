@@ -1,0 +1,27 @@
+# === 数据采集 ===
+apify-client
+
+# === 数据库 ===
+psycopg2-binary
+sqlalchemy[asyncio]
+asyncpg
+
+# === 配置 ===
+python-dotenv
+pydantic
+pydantic-settings
+
+# === Web 框架 (Dash + Feffery) ===
+dash
+feffery-antd-components
+feffery-utils-components
+
+# === HTTP 客户端 ===
+httpx
+
+# === 开发工具 ===
+ruff
+mypy
+pytest
+pytest-asyncio
+aiosqlite

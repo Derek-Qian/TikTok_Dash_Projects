@@ -1,0 +1,26 @@
+/* 1. 设置 body 背景色并消除默认边距 */
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #F5F5F5; /* 整体看板底色 */
+}
+
+/* 2. 最外层容器样式 */
+.main-container {
+    padding: 25px 30px 25px 30px; /*上右下左*/
+    height: 100vh;
+    box-sizing: border-box;
+}
+
+/* 3. 统一卡片样式 */
+.my-card {
+    box-shadow: 0 6px 16px rgb(107 147 224 / 14%);
+    border-radius: 10px;
+    /*padding设置卡片边界与内容的间距*/
+    padding: 20px;
+    height: 100%;
+    box-sizing: border-box;
+    background-color: white;
+    overflow: hidden;
+    flexDirection: column;
+}
