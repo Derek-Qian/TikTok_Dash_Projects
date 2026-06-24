@@ -25,6 +25,7 @@ def transform_1688_to_tiktok(
 
     category_id = category_id_override or _find_category(raw)
 
+    # auto_translate 开启后 TikTok 会自动将中文翻译为目标市场语言
     payload: dict[str, Any] = {
         "save_mode": "LISTING",
         "title": title,
@@ -32,7 +33,14 @@ def transform_1688_to_tiktok(
         "external_product_id": str(raw.get("offerId", "")),
         "locale": locale,
         "auto_translate_enabled": auto_translate,
+        "category_version": "v2",
+        "listing_platforms": ["TIKTOK_SHOP"],
     }
+
+    # 若标题包含中文且未开启自动翻译，则强制开启
+    if not auto_translate and any('\u4e00' <= ch <= '\u9fff' for ch in title):
+        logger.info("检测到中文标题，自动启用 auto_translate")
+        payload["auto_translate_enabled"] = True
 
     if category_id:
         payload["category_id"] = category_id
@@ -56,6 +64,14 @@ def transform_1688_to_tiktok(
             payload["package_weight"] = {
                 "value": str(dims["weight"]),
                 "unit": "KILOGRAM",
+            }
+        # TikTok 要求包裹重量与尺寸同时存在，缺失尺寸时给默认小包装
+        if "weight" in dims and "length" not in dims:
+            payload["package_dimensions"] = {
+                "length": "10",
+                "width": "10",
+                "height": "10",
+                "unit": "CENTIMETER",
             }
 
     if skus:
@@ -132,7 +148,9 @@ def _extract_skus(raw: dict[str, Any], warehouse_id: str, currency: str) -> list
         qty = v.get("stock") or v.get("quantity") or v.get("warehouse_quantity")
         if qty is not None:
             try:
-                sku["inventory"] = [{"warehouse_id": warehouse_id, "quantity": int(qty)}]
+                # TikTok 库存上限 9999，避免参数校验失败
+                capped_qty = min(int(qty), 9999)
+                sku["inventory"] = [{"warehouse_id": warehouse_id, "quantity": capped_qty}]
             except (ValueError, TypeError):
                 pass
 
@@ -166,17 +184,31 @@ def _extract_skus(raw: dict[str, Any], warehouse_id: str, currency: str) -> list
 def _extract_dimensions(raw: dict[str, Any]) -> dict[str, float]:
     result: dict[str, float] = {}
 
-    for key in ("packageWeight", "weight"):
+    for key in ("packageWeight", "weight", "unitWeight"):
         w = raw.get(key)
-        if isinstance(w, (int, float)):
-            result["weight"] = float(w)
+        if isinstance(w, (int, float)) and w > 0:
+            # 1688 unitWeight 单位是克，需要转换为千克
+            if key == "unitWeight":
+                result["weight"] = float(w) / 1000.0
+            else:
+                result["weight"] = float(w)
             break
     if "weight" not in result:
         for key in ("grossWeight", "netWeight"):
             w = raw.get(key)
-            if isinstance(w, (int, float)):
+            if isinstance(w, (int, float)) and w > 0:
                 result["weight"] = float(w)
                 break
+    # 从 SKU 中提取重量作为备选
+    if "weight" not in result:
+        sku_details = raw.get("skuDetails") or {}
+        variants = sku_details.get("variants", []) if isinstance(sku_details, dict) else []
+        for v in variants:
+            if isinstance(v, dict):
+                w = v.get("weight")
+                if isinstance(w, (int, float)) and w > 0:
+                    result["weight"] = float(w)
+                    break
 
     for key in ("packageSize", "packageDimensions", "dimensions"):
         d = raw.get(key)
@@ -223,9 +255,42 @@ def cny_currency(raw: dict[str, Any]) -> str:
     return "CNY"
 
 
+# 中文属性名 → TikTok 英文属性名映射
+_ATTR_NAME_MAP: dict[str, str] = {
+    "颜色": "Color",
+    "尺寸": "Size",
+    "尺码": "Size",
+    "款式": "Style",
+    "规格": "Specification",
+    "材质": "Material",
+}
+
+# 中文属性值 → 英文翻译映射
+_ATTR_VALUE_MAP: dict[str, str] = {
+    "金色": "Gold", "银色": "Silver", "黑色": "Black", "白色": "White",
+    "红色": "Red", "蓝色": "Blue", "绿色": "Green", "粉色": "Pink",
+    "紫色": "Purple", "黄色": "Yellow", "棕色": "Brown", "灰色": "Gray",
+    "一对": " Pair", "一件": " Piece",
+}
+
+
+def _translate_value(raw_value: str) -> str:
+    """尝试将中文属性值翻译为英文，简单关键词替换"""
+    result = raw_value
+    for cn, en in _ATTR_VALUE_MAP.items():
+        result = result.replace(cn, en)
+    return result
+
+
 def _parse_sales_attributes(specs: Any) -> list[dict[str, Any]] | None:
+    """解析 1688 的 SKU 规格信息为 TikTok 销售属性格式"""
     if not specs:
         return None
+    # 情况 1: specs 是字符串（如 "金色一对"），映射为 Color 属性
+    if isinstance(specs, str) and specs.strip():
+        translated = _translate_value(specs.strip())
+        return [{"name": "Color", "value_name": translated}]
+    # 情况 2: specs 是 dict 列表（如 [{"name": "颜色", "value": "金色"}]）
     if isinstance(specs, list):
         attrs: list[dict[str, Any]] = []
         for s in specs:
@@ -233,8 +298,8 @@ def _parse_sales_attributes(specs: Any) -> list[dict[str, Any]] | None:
                 name = s.get("name") or s.get("attributeName") or ""
                 value = s.get("value") or s.get("attributeValue") or ""
                 if name:
-                    attrs.append({"name": str(name), "value_name": str(value)})
+                    en_name = _ATTR_NAME_MAP.get(str(name), str(name))
+                    en_value = _translate_value(str(value))
+                    attrs.append({"name": en_name, "value_name": en_value})
         return attrs if attrs else None
-    if isinstance(specs, str) and specs.strip():
-        return [{"name": "规格", "value_name": specs.strip()}]
     return None

@@ -38,6 +38,9 @@ async def upsert_product(
     batch_id: str,
     product_title: str | None,
     base_data: str,
+    original_price: float | None = None,
+    suggested_price: float | None = None,
+    target_region: str | None = None,
 ) -> None:
     """幂等写入商品主表"""
     now = _now()
@@ -46,15 +49,21 @@ async def upsert_product(
             INSERT INTO tk_fill_products
                 (product_id, batch_id, product_title, base_data,
                  category_id, brand_id, status, last_sync_error,
-                 tiktok_product_id, created_at, update_time)
+                 tiktok_product_id, original_price, suggested_price, target_region,
+                 created_at, update_time)
             VALUES
                 (:product_id, :batch_id, :product_title, :base_data,
-                 NULL, NULL, 'pending', NULL,
-                 NULL, :created_at, :update_time)
+                 NULL, NULL, 'fetched', NULL,
+                 NULL, :original_price, :suggested_price, :target_region,
+                 :created_at, :update_time)
             ON CONFLICT (product_id) DO UPDATE SET
                 batch_id = EXCLUDED.batch_id,
                 product_title = EXCLUDED.product_title,
                 base_data = EXCLUDED.base_data,
+                original_price = EXCLUDED.original_price,
+                suggested_price = EXCLUDED.suggested_price,
+                target_region = EXCLUDED.target_region,
+                status = EXCLUDED.status,
                 update_time = EXCLUDED.update_time
         """),
         {
@@ -62,6 +71,9 @@ async def upsert_product(
             "batch_id": batch_id,
             "product_title": product_title,
             "base_data": base_data,
+            "original_price": original_price,
+            "suggested_price": suggested_price,
+            "target_region": target_region,
             "created_at": now,
             "update_time": now,
         },
@@ -139,7 +151,8 @@ async def get_all_products(session: AsyncSession) -> list[dict[str, object]]:
     result = await session.execute(
         text("""
             SELECT product_id, batch_id, product_title, status,
-                   tiktok_product_id, created_at
+                   tiktok_product_id, original_price, suggested_price,
+                   target_region, created_at
             FROM tk_fill_products
             ORDER BY created_at DESC
         """),
@@ -152,7 +165,10 @@ async def get_all_products(session: AsyncSession) -> list[dict[str, object]]:
             "product_title": r[2],
             "status": r[3],
             "tiktok_product_id": r[4],
-            "created_at": str(r[5]) if r[5] else None,
+            "original_price": float(r[5]) if r[5] else None,
+            "suggested_price": float(r[6]) if r[6] else None,
+            "target_region": r[7],
+            "created_at": str(r[8]) if r[8] else None,
         }
         for r in rows
     ]
@@ -216,6 +232,7 @@ async def get_product_detail(
         text("""
             SELECT product_id, product_title, status, batch_id,
                    category_id, brand_id, tiktok_product_id,
+                   original_price, suggested_price, target_region,
                    created_at, update_time
             FROM tk_fill_products
             WHERE product_id = :pid
@@ -233,9 +250,58 @@ async def get_product_detail(
         "category_id": row[4],
         "brand_id": row[5],
         "tiktok_product_id": row[6],
-        "created_at": str(row[7]) if row[7] else None,
-        "update_time": str(row[8]) if row[8] else None,
+        "original_price": float(row[7]) if row[7] else None,
+        "suggested_price": float(row[8]) if row[8] else None,
+        "target_region": row[9],
+        "created_at": str(row[10]) if row[10] else None,
+        "update_time": str(row[11]) if row[11] else None,
     }
+
+
+async def mark_products_reviewed(
+    session: AsyncSession,
+    product_ids: list[str],
+) -> int:
+    """将商品标记为已检查（可推送）"""
+    if not product_ids:
+        return 0
+    result = await session.execute(
+        text("""
+            UPDATE tk_fill_products
+            SET status = 'reviewed',
+                update_time = :update_time
+            WHERE product_id = ANY(:ids)
+              AND status IN ('fetched', 'failed')
+        """),
+        {
+            "ids": product_ids,
+            "update_time": _now(),
+        },
+    )
+    await session.commit()
+    return int(result.rowcount)
+
+
+async def update_suggested_price(
+    session: AsyncSession,
+    product_id: str,
+    suggested_price: float,
+) -> None:
+    """更新商品建议价格"""
+    await session.execute(
+        text("""
+            UPDATE tk_fill_products
+            SET suggested_price = :suggested_price,
+                update_time = :update_time
+            WHERE product_id = :product_id
+        """),
+        {
+            "product_id": product_id,
+            "suggested_price": suggested_price,
+            "update_time": _now(),
+        },
+    )
+    await session.commit()
 
 
 async def get_tiktok_credentials(
@@ -278,14 +344,14 @@ async def upsert_warehouses(
     warehouses: list[dict[str, Any]],
 ) -> None:
     import json as _json
-    from datetime import datetime as _datetime
-    from datetime import timezone as _timezone
 
-    now = _datetime.now(_timezone.utc)
+    now = _now()
+    valid_ids: set[str] = set()
     for w in warehouses:
         wid = str(w.get("id", ""))
         if not wid:
             continue
+        valid_ids.add(wid)
         address_data = _json.dumps(w.get("address", {}), ensure_ascii=False)
         await session.execute(
             text("""
@@ -314,16 +380,40 @@ async def upsert_warehouses(
                 "now": now,
             },
         )
+    # 清理已失效的仓库记录，避免默认仓库落到不存在的旧 ID
+    if valid_ids:
+        await session.execute(
+            text("DELETE FROM tk_warehouses WHERE warehouse_id <> ALL(:ids)"),
+            {"ids": list(valid_ids)},
+        )
     await session.commit()
 
 
 async def get_default_warehouse_id(session: AsyncSession) -> str | None:
+    # 优先使用默认的销售仓库
     result = await session.execute(
-        text("SELECT warehouse_id FROM tk_warehouses WHERE is_default = TRUE AND effect_status = 'ENABLED' LIMIT 1"),
+        text("""
+            SELECT warehouse_id FROM tk_warehouses
+            WHERE is_default = TRUE AND effect_status = 'ENABLED'
+            ORDER BY type = 'SALES_WAREHOUSE' DESC
+            LIMIT 1
+        """),
     )
     row = result.fetchone()
     if row:
         return str(row[0])
+    # 其次选择任意销售仓库
+    result = await session.execute(
+        text("""
+            SELECT warehouse_id FROM tk_warehouses
+            WHERE effect_status = 'ENABLED' AND type = 'SALES_WAREHOUSE'
+            LIMIT 1
+        """),
+    )
+    row = result.fetchone()
+    if row:
+        return str(row[0])
+    # 最后兜底：任意可用仓库
     result = await session.execute(
         text("SELECT warehouse_id FROM tk_warehouses WHERE effect_status = 'ENABLED' LIMIT 1"),
     )

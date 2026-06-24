@@ -6,7 +6,7 @@ from datetime import datetime
 
 from apify_client import ApifyClient
 
-from src.apify.schemas import ApifyProduct
+from src.apify.schemas import ApifyProduct, ApifySyncParams
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SyncResult:
     """一次同步的统计结果"""
+
     batch_id: str
+    params: ApifySyncParams
     total: int = 0
     success: int = 0
     failed: int = 0
@@ -33,14 +35,14 @@ class ApifyService:
     def _generate_batch_id(self) -> str:
         return f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    def run_scraper(self, offer_ids: list[str]) -> str:
+    def run_scraper(self, params: ApifySyncParams) -> str:
         """调用 Apify Actor 并返回 dataset_id"""
-        run_input = {
-            "offerIds": offer_ids,
-            "includeSkuDetails": True,
-            "proxyCountryMode": "CN",
-        }
-        logger.info("🚀 正在调用 Apify Actor: %s, 商品数: %d", config.APIFY_ACTOR_ID, len(offer_ids))
+        run_input = params.to_run_input()
+        logger.info(
+            "🚀 正在调用 Apify Actor: %s, 参数: %s",
+            config.APIFY_ACTOR_ID,
+            run_input,
+        )
         run = self._client.actor(config.APIFY_ACTOR_ID).call(run_input=run_input)
         dataset_id = run.default_dataset_id  # type: ignore[union-attr]
         logger.info("📦 数据集 ID: %s", dataset_id)
@@ -53,19 +55,19 @@ class ApifyService:
         logger.info("📋 获取到 %d 条原始数据", len(items))
         return [ApifyProduct(item) for item in items]
 
-    def sync(self, offer_ids: list[str] | None = None) -> SyncResult:
+    def sync(self, params: ApifySyncParams | None = None) -> SyncResult:
         """执行一次完整采集（运行 Actor + 拉取数据），返回结构化结果"""
-        offer_ids = offer_ids or config.DAILY_OFFER_IDS
-        if not offer_ids:
-            logger.warning("⚠️ 没有指定商品 ID，跳过采集")
-            return SyncResult(batch_id="")
+        params = params or ApifySyncParams(offer_ids=config.DAILY_OFFER_IDS)
+        if not params.offer_ids and not params.keywords:
+            logger.warning("⚠️ 没有指定商品 ID 或关键词，跳过采集")
+            return SyncResult(batch_id="", params=params)
 
         batch_id = self._generate_batch_id()
         logger.info("🚀 批次 ID: %s", batch_id)
 
-        dataset_id = self.run_scraper(offer_ids)
+        dataset_id = self.run_scraper(params)
         products = self.fetch_items(dataset_id)
 
-        result = SyncResult(batch_id=batch_id, products=products)
+        result = SyncResult(batch_id=batch_id, params=params, products=products)
         result.total = len(products)
         return result

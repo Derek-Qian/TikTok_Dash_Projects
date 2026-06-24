@@ -95,21 +95,21 @@ class PushService:
 
         image_uris = await self._upload_images(base_data)
 
-        recommended_cat = await self._tiktok.recommend_category(
-            title=_extract_title(base_data),
-            description=_extract_desc(base_data),
-            image_uris=image_uris,
-            locale=self._locale,
-        )
+        recommended_cat: str | None = None
+
+        # 从商品标题/类目中猜测英文关键词，用于搜索合适的 TikTok 类目
+        search_keyword = _guess_english_keyword(base_data)
+        logger.info("商品 %s 搜索类目关键词: %s", product_id, search_keyword)
+
         if not recommended_cat:
-            english_kw = _guess_english_keyword(base_data)
             recommended_cat = await self._tiktok.get_v2_categories(
-                keyword=english_kw,
+                keyword=search_keyword,
                 locale="en-US",
             )
         if not recommended_cat:
             recommended_cat = await self._tiktok.get_v2_categories(
-                locale="en-US",
+                keyword=search_keyword,
+                locale="ms-MY",
             )
         if not recommended_cat:
             logger.warning("无法获取 V2 类目，请手动配置")
@@ -119,12 +119,17 @@ class PushService:
             warehouse_id=warehouse_id,
             locale=self._locale,
             currency=self._currency,
-            auto_translate=True,
+            auto_translate=False,
             main_image_uris=image_uris if image_uris else None,
             category_id_override=recommended_cat,
         )
 
-        logger.info("推送 payload category_id=%s", tiktok_payload.get("category_id"))
+        import json as _json
+
+        if not tiktok_payload.get("description"):
+            tiktok_payload["description"] = f"<p>{tiktok_payload.get('title', '')}</p>"
+        payload_json = _json.dumps(tiktok_payload, ensure_ascii=False)
+        logger.info("推送 payload 完整: %s", payload_json)
 
         result = await self._tiktok.create_product(tiktok_payload)
         if result is None:
@@ -193,12 +198,13 @@ class PushService:
         self,
         product_ids: list[str],
     ) -> list[PushResult]:
-        async def _push_one(pid: str) -> PushResult:
+        # 顺序推送，避免并发导致网络拥塞和 API 限流
+        results: list[PushResult] = []
+        for pid in product_ids:
             async with create_session() as sess:
-                return await self.push_product(sess, pid)
-
-        tasks = [_push_one(pid) for pid in product_ids]
-        return await asyncio.gather(*tasks)
+                result = await self.push_product(sess, pid)
+                results.append(result)
+        return results
 
 
 def _extract_image_urls(raw: dict[str, object]) -> list[str]:

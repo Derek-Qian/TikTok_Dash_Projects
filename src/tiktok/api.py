@@ -153,6 +153,26 @@ class TikTokApiClient:
         locale: str = "en-US",
     ) -> str | None:
         path = "/product/202309/categories"
+        all_cats = await self._fetch_categories(path, locale, keyword)
+        if not all_cats:
+            return None
+
+        leaf_cats = [
+            c for c in all_cats if c.get("is_leaf") and "INVITE_ONLY" not in (c.get("permission_statuses") or [])
+        ]
+        logger.info("V2 类目总数=%d, 可用叶子=%d", len(all_cats), len(leaf_cats))
+
+        if leaf_cats:
+            cat_id = str(leaf_cats[0].get("id", ""))
+            logger.info("选中 V2 类目: %s (%s)", cat_id, leaf_cats[0].get("local_name"))
+            return cat_id
+        if all_cats:
+            cat_id = str(all_cats[0].get("id", ""))
+            logger.info("无叶子类目, 回退: %s", cat_id)
+            return cat_id
+        return None
+
+    async def _fetch_categories(self, path: str, locale: str, keyword: str) -> list[dict[str, Any]] | None:
         query_params = self._base_query(include_cipher=True)
         query_params["locale"] = locale
         query_params["category_version"] = "v2"
@@ -164,22 +184,8 @@ class TikTokApiClient:
         url = f"{TIKTOK_API_BASE}{path}?{urlencode(query_params)}"
         result = await self._get(url)
         if result and "error" not in result:
-            categories = result.get("categories") or []
-            leaf_cats = [
-                c for c in categories if c.get("is_leaf") and "INVITE_ONLY" not in c.get("permission_statuses", [])
-            ]
-            logger.info("V2 类目总数=%d, 可用叶子类目=%d", len(categories), len(leaf_cats))
-            for cat in leaf_cats[:3]:
-                logger.info("  %s: %s", cat.get("id"), cat.get("local_name"))
-            if leaf_cats:
-                cat_id = str(leaf_cats[0].get("id", ""))
-                logger.info("选中 V2 类目: %s (%s)", cat_id, leaf_cats[0].get("local_name"))
-                return cat_id
-            if categories:
-                cat_id = str(categories[0].get("id", ""))
-                logger.info("无可用叶子类目，回退到: %s", cat_id)
-                return cat_id
-        logger.warning("获取 V2 类目失败: %s", result)
+            return result.get("categories") or []
+        logger.warning("获取类目失败: %s", result)
         return None
 
     async def _get(self, url: str) -> dict[str, Any] | None:
@@ -212,6 +218,8 @@ class TikTokApiClient:
 
     @staticmethod
     def _handle_response(resp: httpx.Response) -> dict[str, Any] | None:
+        import json as _json
+
         if resp.status_code == 200:
             result: dict[str, Any] = resp.json()
             if result.get("code") == 0:
@@ -219,7 +227,9 @@ class TikTokApiClient:
                 return data
             code = result.get("code")
             msg = result.get("message", "")
-            logger.warning("TikTok API 业务错误 [%s] %s", code, msg)
+            logger.warning(
+                "TikTok API 业务错误 [%s] %s full=%s", code, msg, _json.dumps(result, ensure_ascii=False)[:500]
+            )
             return {"error": f"code={code} msg={msg}"}
         resp_body = resp.text[:500]
         logger.warning("TikTok API HTTP %d: %s", resp.status_code, resp_body)

@@ -17,20 +17,23 @@ def render_data_table() -> fac.AntdTable:
     return fac.AntdTable(
         id="data-table",
         columns=[
-            {"title": "商品 ID", "dataIndex": "product_id", "width": 140, "editable": False},
+            {"title": "商品 ID", "dataIndex": "product_id", "width": 130, "editable": False},
             {
                 "title": "商品标题",
                 "dataIndex": "product_title",
-                "width": 280,
+                "width": 260,
                 "editable": False,
                 "renderOptions": {"renderType": "custom-format"},
             },
             {"title": "状态", "dataIndex": "status", "width": 90, "editable": False},
+            {"title": "原价(CNY)", "dataIndex": "original_price", "width": 100, "editable": False},
+            {"title": "建议价", "dataIndex": "suggested_price", "width": 100, "editable": False},
+            {"title": "目标市场", "dataIndex": "target_region", "width": 90, "editable": False},
             {"title": "批次号", "dataIndex": "batch_id", "width": 170, "editable": False},
             {
                 "title": "1688链接",
                 "dataIndex": "link_1688",
-                "width": 100,
+                "width": 90,
                 "editable": False,
                 "renderOptions": {"renderType": "custom-format"},
             },

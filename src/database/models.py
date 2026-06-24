@@ -30,6 +30,9 @@ class TkFillProduct(Base):
     tiktok_product_id: Mapped[str | None] = mapped_column()
     last_sync_error: Mapped[str | None] = mapped_column(Text)
     base_data: Mapped[str] = mapped_column()
+    original_price: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    suggested_price: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    target_region: Mapped[str | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
     update_time: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 

@@ -246,3 +246,28 @@ State("data-table", "selectedRows")  # ✅ 返回完整行数据列表
 - `tk_auth_info` → `app_key`, `app_secret`, `access_token`
 - `tk_shops` → `shop_cipher`（通过 `app_key` 关联）
 **修复**：使用 JOIN 查询一次性获取全部凭证，`TikTokApiClient` 构造函数接收显式参数
+
+### 8.4 推送失败：Product package size is invalid
+**现象**：TikTok 返回 `code=12052116`：`Product package size is invalid. You cannot enter 0 or other non-numeric characters.`
+
+**原因**：商品原始数据中只有 `unitWeight`（克），没有 `packageSize` / `packageDimensions`。`transform_1688_to_tiktok` 只传了 `package_weight`，没传 `package_dimensions`，TikTok 校验失败。
+
+**修复**：
+- `transformer.py`：当存在重量但缺失尺寸时，自动补充默认小包装尺寸 `10x10x10 cm`
+- 修正 `unitWeight` 转换：统一按克转千克（除以 1000），不再只在 `>1` 时转换
+
+### 8.5 推送失败：The warehouse does not exist
+**现象**：TikTok 返回 `code=12052097`：`The warehouse does not exist. Nonexistent warehouse ID(s): 0`
+
+**原因**：`tk_warehouses` 表中缓存的仓库 ID 已失效（TikTok 接口返回的仓库 ID 与历史数据不一致），`get_default_warehouse_id` 选到了不存在的旧 ID。
+
+**修复**：
+- `repository.py`：`upsert_warehouses` 在同步时清理不在新列表中的旧仓库记录
+- `repository.py`：`get_default_warehouse_id` 优先选择 `is_default = TRUE` 的仓库，其次选择 `type = 'SALES_WAREHOUSE'` 的仓库，避免误选 RETURN 仓库
+
+### 8.6 仓库同步时 datetime timezone 错误
+**现象**：调用 `upsert_warehouses` 报错：`can't subtract offset-naive and offset-aware datetimes`
+
+**原因**：`tk_warehouses.created_at` 字段是 `DateTime(timezone=False)`（无时区），但 `upsert_warehouses` 使用了 `datetime.now(timezone.utc)`（带时区）。
+
+**修复**：`repository.py` 中 `upsert_warehouses` 使用与表定义一致的本地时间 `_now()`（无时区）。

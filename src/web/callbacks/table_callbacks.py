@@ -18,7 +18,8 @@ def _link_1688(product_id: str) -> str:
 
 
 _STATUS_MAP: dict[str, str] = {
-    "pending": "待推送",
+    "fetched": "待检查",
+    "reviewed": "可推送",
     "pushing": "推送中",
     "pushed": "已推送",
     "failed": "推送失败",
@@ -27,11 +28,14 @@ _STATUS_MAP: dict[str, str] = {
 
 def _make_row(r: dict[str, object]) -> dict[str, object]:
     pid = str(r["product_id"])
-    raw_status = str(r.get("status") or "pending")
+    raw_status = str(r.get("status") or "fetched")
     return {
         "product_id": pid,
         "product_title": r["product_title"],
         "status": _STATUS_MAP.get(raw_status, raw_status),
+        "original_price": r.get("original_price"),
+        "suggested_price": r.get("suggested_price"),
+        "target_region": r.get("target_region") or "-",
         "batch_id": r["batch_id"],
         "link_1688": _link_1688(pid),
         "created_at": str(r["created_at"]) if r.get("created_at") else None,
